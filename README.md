@@ -57,18 +57,29 @@ LLM_MODEL=dsv4f
 
 首次启动会自动建表。
 
-## Docker（Windows 服务器可用）
+## Windows Server 2019 部署
 
-```bash
-cp backend/.env.example backend/.env
-# 编辑 backend/.env
-docker compose up -d --build
+详细步骤见 **[docs/DEPLOY-Windows.md](docs/DEPLOY-Windows.md)**。
+
+### 若 Docker 报 `no matching manifest for windows...`
+
+说明当前是 **Windows 容器**，拉不了本项目的 Linux 镜像。请改用 **原生部署**：
+
+```powershell
+# 需已安装 Python 3.11+、Node.js（首次构建前端）
+cd C:\Users\Administrator\Documents\GitHub\detection
+.\scripts\setup-windows-native.ps1
+.\scripts\run-windows.ps1
+# 浏览器: http://服务器IP:8000
 ```
 
-- 前端：http://服务器:8080  
-- API：http://服务器:8000/docs  
+### 仅当 Docker 已是 Linux 容器时
 
-SQL Server 在宿主机时，`DATABASE_URL` 主机可用 `host.docker.internal`（需在 compose 中取消 `extra_hosts` 注释）。
+```powershell
+copy backend\.env.example backend\.env
+docker-compose up -d --build
+# 前端 http://IP:8080
+```
 
 ## 目录
 
