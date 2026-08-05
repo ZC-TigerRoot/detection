@@ -48,7 +48,7 @@ def extract_file_with_status(path: Path) -> tuple[str, str, str]:
         elif ext in {".txt", ".md", ".csv"}:
             text = _read_text_auto(path)
         elif ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
-            return f"[图片附件，未做 OCR: {path.name}]", "no_text", "图片附件未做 OCR"
+            return _ocr_image_with_status(path)
         else:
             return f"[暂不支持的文件类型: {path.name}]", "no_text", f"暂不支持的文件类型: {ext}"
     except Exception as exc:  # noqa: BLE001
@@ -163,6 +163,25 @@ def _extract_xlsx_raw(path: Path) -> str:
                     lines.append(" | ".join(vals))
             parts.append("\n".join(lines))
         return "\n\n".join(parts).strip()
+
+
+def _ocr_image_with_status(path: Path) -> tuple[str, str, str]:
+    """单张图片走 RapidOCR 识别文字。"""
+    try:
+        engine = _get_ocr_engine()
+    except ImportError:
+        return (
+            f"[未安装 rapidocr-onnxruntime，无法 OCR 图片: {path.name}]",
+            "no_text",
+            "未安装 OCR 依赖",
+        )
+    try:
+        result, _ = engine(str(path))
+        if not result:
+            return "", "no_text", "OCR 未识别到文字"
+        return "\n".join(item[1] for item in result).strip(), "success", ""
+    except Exception as exc:  # noqa: BLE001
+        return f"[图片 OCR 失败 {path.name}: {exc}]", "failed", str(exc)
 
 
 def _extract_pdf(path: Path) -> str:
