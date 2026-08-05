@@ -63,7 +63,8 @@ docker-compose version
 在 SSMS 或 `sqlcmd` 中执行：
 
 ```sql
-CREATE DATABASE detection;
+-- 建议中文排序规则；中文内容依赖 NVARCHAR（应用启动会自动把旧 varchar 升为 nvarchar）
+CREATE DATABASE detection COLLATE Chinese_PRC_CI_AS;
 GO
 -- 建议单独登录（示例）
 CREATE LOGIN detection_app WITH PASSWORD = '改成强密码';
@@ -73,6 +74,9 @@ CREATE USER detection_app FOR LOGIN detection_app;
 ALTER ROLE db_owner ADD MEMBER detection_app;
 GO
 ```
+
+> **中文显示成 `????`：** 旧版表若用 `VARCHAR`/`TEXT`，写入时中文会被替换成 `?`。  
+> 升级代码后**重启 API** 会自动 `ALTER` 为 `NVARCHAR`；**已损坏的行无法恢复**，需重新上传并「AI 解析」。
 
 确认 SQL Server 允许 TCP 连接（配置管理器 → TCP/IP 启用，默认 1433），防火墙放行 1433（若仅本机 Docker 访问，可只允许本地）。
 

@@ -10,6 +10,17 @@ W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 SS_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
 
+def _read_text_auto(path: Path) -> str:
+    """按常见中文编码尝试解码，避免 GBK 文本被当 UTF-8 丢掉。"""
+    raw = path.read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "gb18030", "gbk", "cp936"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def extract_file(path: Path) -> str:
     ext = path.suffix.lower()
     try:
@@ -22,7 +33,7 @@ def extract_file(path: Path) -> str:
         if ext == ".doc":
             return _extract_doc(path)
         if ext in {".txt", ".md", ".csv"}:
-            return path.read_text(encoding="utf-8", errors="ignore")
+            return _read_text_auto(path)
         if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
             return f"[图片附件，未做 OCR: {path.name}]"
         return f"[暂不支持的文件类型: {path.name}]"
@@ -187,7 +198,7 @@ def _extract_doc(path: Path) -> str:
         )
         txt_path = out_dir / f"{path.stem}.txt"
         if txt_path.exists():
-            return txt_path.read_text(encoding="utf-8", errors="ignore").strip()
+            return _read_text_auto(txt_path).strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
