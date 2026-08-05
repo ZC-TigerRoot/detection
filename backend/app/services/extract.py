@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -158,9 +159,49 @@ def _extract_pdf(path: Path) -> str:
         texts.append(page.get_text("text"))
     doc.close()
     text = "\n".join(texts).strip()
-    if not text:
-        return f"[PDF 无文字层（可能是扫描件）: {path.name}]"
-    return text
+    if text:
+        return text
+    return _ocr_pdf(path, max_pages)
+
+
+_ocr_engine: object | None = None
+
+
+def _get_ocr_engine():
+    """懒加载 RapidOCR 引擎（首次初始化较慢，之后复用）。"""
+    global _ocr_engine
+    if _ocr_engine is None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
+def _ocr_pdf(path: Path, max_pages: int) -> str:
+    """无文字层的扫描件 PDF：渲染成图片后用 RapidOCR 识别中文。"""
+    try:
+        engine = _get_ocr_engine()
+    except ImportError:
+        return f"[PDF 无文字层，且未安装 rapidocr-onnxruntime: {path.name}]"
+
+    import fitz  # pymupdf
+
+    doc = fitz.open(path)
+    parts: list[str] = []
+    try:
+        with tempfile.TemporaryDirectory(prefix="detection_ocr_") as tmp:
+            for i in range(max_pages):
+                page = doc.load_page(i)
+                pix = page.get_pixmap(dpi=200)
+                png = Path(tmp) / f"page_{i}.png"
+                pix.save(png)
+                result, _ = engine(str(png))
+                if result:
+                    lines = [item[1] for item in result]
+                    parts.append("\n".join(lines))
+    finally:
+        doc.close()
+    return "\n".join(parts).strip()
 
 
 def _extract_doc(path: Path) -> str:
