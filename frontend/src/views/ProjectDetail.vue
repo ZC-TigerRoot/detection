@@ -15,7 +15,9 @@
       </div>
       <div class="actions">
         <el-upload :show-file-list="false" :http-request="onUpload" multiple accept=".docx,.doc,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.txt">
-          <el-button :loading="uploading">上传方案</el-button>
+          <el-button :loading="uploading">
+            {{ uploading ? '上传并提取中…' : '上传方案' }}
+          </el-button>
         </el-upload>
         <el-button type="warning" :loading="parsing" :disabled="!project?.files?.length" @click="onParse">
           AI 解析
@@ -27,6 +29,14 @@
         <el-button type="primary" :loading="exporting" @click="onExport">导出 Word</el-button>
       </div>
     </div>
+
+    <el-alert
+      v-if="allFilesNoText"
+      type="warning"
+      title="所有附件均未提取到文本，AI 解析将无法进行；请上传带文字层的 docx/pdf 等方案文件"
+      show-icon
+      style="margin-bottom: 12px"
+    />
 
     <el-alert
       v-if="project?.parse_error"
@@ -80,12 +90,18 @@
             <el-button type="primary" plain @click="onSaveMeta">保存基本信息</el-button>
           </el-form>
 
-          <h3 class="sec" style="margin-top: 20px">附件</h3>
+          <h3 class="sec" style="margin-top: 20px">
+            附件
+            <span v-if="extractSummary" class="extract-summary">{{ extractSummary }}</span>
+          </h3>
           <el-empty v-if="!project?.files?.length" description="尚未上传" :image-size="60" />
           <ul class="file-list" v-else>
             <li v-for="f in project.files" :key="f.id">
               <span class="fname" :title="f.original_name">{{ f.original_name }}</span>
               <el-tag size="small" :type="f.has_text ? 'success' : 'info'">{{ f.file_ext }}</el-tag>
+              <el-tooltip :content="extTooltip(f)" placement="top">
+                <el-tag size="small" :type="extStatusType(f)" effect="plain">{{ extStatusLabel(f) }}</el-tag>
+              </el-tooltip>
               <el-button link type="primary" size="small" @click="previewFile(f)">原文</el-button>
             </li>
           </ul>
@@ -177,7 +193,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   detectType,
@@ -227,6 +243,31 @@ function statusType(s) {
       parse_failed: 'danger',
     }[s] || ''
   )
+}
+
+const extractSummary = computed(() => {
+  const files = project.value?.files || []
+  if (!files.length) return ''
+  const ok = files.filter((f) => f.extract_status === 'success').length
+  return `${ok}/${files.length} 个文件已提取`
+})
+
+const allFilesNoText = computed(() => {
+  const files = project.value?.files || []
+  return files.length > 0 && files.every((f) => f.extract_status !== 'success')
+})
+
+function extStatusLabel(f) {
+  return { success: '已提取', no_text: '无文本', failed: '提取失败' }[f.extract_status] || '未知'
+}
+
+function extStatusType(f) {
+  return { success: 'success', no_text: 'warning', failed: 'danger' }[f.extract_status] || 'info'
+}
+
+function extTooltip(f) {
+  const err = f.extract_error ? `：${f.extract_error}` : ''
+  return `${extStatusLabel(f)}${err}`
 }
 
 function emptyRow() {
@@ -279,7 +320,18 @@ async function onUpload({ file }) {
     project.value = data
     form.value.project_type = data.project_type
     const label = data.project_type === 'basic' ? '基础/单次' : '年度'
-    ElMessage.success(`已上传 ${file.name}，自动识别类型：${label}`)
+    const f = (data.files || []).find((x) => x.original_name === file.name)
+    let msg = `已上传 ${file.name}，自动识别类型：${label}`
+    if (f && f.extract_status === 'success') {
+      msg += '，文本提取完成'
+      ElMessage.success(msg)
+    } else if (f && f.extract_status === 'failed') {
+      ElMessage.warning(`已上传 ${file.name}，但文本提取失败：${f.extract_error}`)
+    } else if (f) {
+      ElMessage.warning(`已上传 ${file.name}，但未提取到文本，无法进行 AI 解析`)
+    } else {
+      ElMessage.success(msg)
+    }
   } finally {
     uploading.value = false
   }
@@ -380,6 +432,12 @@ onMounted(load)
   font-size: 14px;
   margin: 0 0 12px;
   color: #303133;
+}
+.extract-summary {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: normal;
+  color: #909399;
 }
 .file-list {
   list-style: none;

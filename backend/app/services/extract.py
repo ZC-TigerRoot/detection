@@ -23,23 +23,43 @@ def _read_text_auto(path: Path) -> str:
 
 
 def extract_file(path: Path) -> str:
+    """兼容旧调用：只返回提取文本。"""
+    return extract_file_with_status(path)[0]
+
+
+def extract_file_with_status(path: Path) -> tuple[str, str, str]:
+    """提取文本并返回状态标识。
+
+    返回 (text, status, error)，status 取值：
+    - success: 提取到有效文本
+    - no_text: 无有效文本（图片未 OCR、暂不支持类型、空文本等）
+    - failed:  提取过程异常
+    """
     ext = path.suffix.lower()
     try:
         if ext == ".docx":
-            return _extract_docx(path)
-        if ext in {".xlsx", ".xlsm"}:
-            return _extract_xlsx(path)
-        if ext == ".pdf":
-            return _extract_pdf(path)
-        if ext == ".doc":
-            return _extract_doc(path)
-        if ext in {".txt", ".md", ".csv"}:
-            return _read_text_auto(path)
-        if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
-            return f"[图片附件，未做 OCR: {path.name}]"
-        return f"[暂不支持的文件类型: {path.name}]"
+            text = _extract_docx(path)
+        elif ext in {".xlsx", ".xlsm"}:
+            text = _extract_xlsx(path)
+        elif ext == ".pdf":
+            text = _extract_pdf(path)
+        elif ext == ".doc":
+            text = _extract_doc(path)
+        elif ext in {".txt", ".md", ".csv"}:
+            text = _read_text_auto(path)
+        elif ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+            return f"[图片附件，未做 OCR: {path.name}]", "no_text", "图片附件未做 OCR"
+        else:
+            return f"[暂不支持的文件类型: {path.name}]", "no_text", f"暂不支持的文件类型: {ext}"
     except Exception as exc:  # noqa: BLE001
-        return f"[解析失败 {path.name}: {exc}]"
+        return f"[解析失败 {path.name}: {exc}]", "failed", str(exc)
+
+    text = (text or "").strip()
+    if not text or text.startswith("["):
+        if text.startswith("[解析失败"):
+            return text, "failed", text
+        return text, "no_text", text or "未能从文件中提取到文本"
+    return text, "success", ""
 
 
 def _extract_docx(path: Path) -> str:

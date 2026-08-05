@@ -73,6 +73,8 @@ class ProjectFile(Base):
     file_ext: Mapped[str] = mapped_column(_Str20, default="")
     size: Mapped[int] = mapped_column(Integer, default=0)
     extracted_text: Mapped[str] = mapped_column(_Text, default="")
+    extract_status: Mapped[str] = mapped_column(_Str20, default="")  # success | no_text | failed
+    extract_error: Mapped[str] = mapped_column(_Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     project: Mapped[Project] = relationship(back_populates="files")

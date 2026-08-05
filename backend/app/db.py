@@ -123,10 +123,58 @@ def _migrate_mssql_unicode() -> None:
             )
 
 
+def _ensure_project_file_columns() -> None:
+    """为已有数据库补 project_files 新增列（create_all 不会为已存在的表加列）。"""
+    with engine.begin() as conn:
+        if settings.database_url.startswith("sqlite"):
+            cols = {
+                row[1]
+                for row in conn.execute(text("PRAGMA table_info(project_files)")).fetchall()
+            }
+            if "extract_status" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE project_files "
+                        "ADD COLUMN extract_status VARCHAR(20) NOT NULL DEFAULT ''"
+                    )
+                )
+            if "extract_error" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE project_files "
+                        "ADD COLUMN extract_error TEXT NOT NULL DEFAULT ''"
+                    )
+                )
+        elif "mssql" in settings.database_url:
+            for col, type_sql in (
+                ("extract_status", "NVARCHAR(20) NOT NULL DEFAULT ''"),
+                ("extract_error", "NVARCHAR(MAX) NOT NULL DEFAULT ''"),
+            ):
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT 1 FROM sys.columns c
+                        JOIN sys.tables tb ON c.object_id = tb.object_id
+                        WHERE tb.name = 'project_files' AND c.name = :name
+                        """
+                    ),
+                    {"name": col},
+                ).fetchone()
+                if not row:
+                    conn.execute(
+                        text(f"ALTER TABLE project_files ADD {col} {type_sql}")
+                    )
+
+
 def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    try:
+        _ensure_project_file_columns()
+    except Exception as exc:  # noqa: BLE001
+        # 不阻断启动；日志由 uvicorn 打印
+        print(f"[db] project_files 新增列迁移跳过/失败: {exc}")
     if "mssql" in settings.database_url:
         try:
             _migrate_mssql_unicode()

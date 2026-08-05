@@ -26,7 +26,7 @@ from app.schemas import (
     MonitoringItemOut,
     TypeDetectResult,
 )
-from app.services.extract import combine_project_texts, extract_file
+from app.services.extract import combine_project_texts, extract_file_with_status
 from app.services.export_docx import export_project_docx, safe_filename
 from app.services.llm_parse import normalize_parsed, parse_with_llm
 from app.services.detect import detect_project_type
@@ -53,6 +53,16 @@ def _project_summary(db: Session, p: Project) -> ProjectSummary:
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
+
+
+def _file_extract_status(f: ProjectFile) -> str:
+    if f.extract_status:
+        return f.extract_status
+    # 兼容旧数据：按 extracted_text 内容推断
+    text = f.extracted_text or ""
+    if not text or text.startswith("["):
+        return "failed" if text.startswith("[解析失败") else "no_text"
+    return "success"
 
 
 def _to_detail(p: Project) -> ProjectDetail:
@@ -82,6 +92,8 @@ def _to_detail(p: Project) -> ProjectDetail:
                 content_type=f.content_type,
                 created_at=f.created_at,
                 has_text=bool(f.extracted_text and not f.extracted_text.startswith("[")),
+                extract_status=_file_extract_status(f),
+                extract_error=f.extract_error or "",
             )
             for f in p.files
         ],
@@ -207,7 +219,7 @@ async def upload_files(
         path = dest_dir / stored
         content = await up.read()
         path.write_bytes(content)
-        text = extract_file(path)
+        text, extract_status, extract_error = extract_file_with_status(path)
         pf = ProjectFile(
             project_id=project_id,
             original_name=raw_name,
@@ -216,6 +228,8 @@ async def upload_files(
             file_ext=ext,
             size=len(content),
             extracted_text=text,
+            extract_status=extract_status,
+            extract_error=extract_error,
         )
         db.add(pf)
 

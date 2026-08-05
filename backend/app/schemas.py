@@ -42,6 +42,8 @@ class ProjectFileOut(BaseModel):
     content_type: str
     created_at: Optional[datetime] = None
     has_text: bool = False
+    extract_status: str = ""  # success | no_text | failed
+    extract_error: str = ""
 
     model_config = {"from_attributes": True}
 
