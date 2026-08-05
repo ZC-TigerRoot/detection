@@ -20,6 +20,9 @@
         <el-button type="warning" :loading="parsing" :disabled="!project?.files?.length" @click="onParse">
           AI 解析
         </el-button>
+        <el-button :loading="detecting" :disabled="!project?.files?.length" @click="onDetectType">
+          识别类型
+        </el-button>
         <el-button type="success" :loading="saving" @click="onSave(false)">保存校对</el-button>
         <el-button type="primary" :loading="exporting" @click="onExport">导出 Word</el-button>
       </div>
@@ -175,8 +178,9 @@
 
 <script setup>
 import { onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  detectType,
   downloadExport,
   exportProject,
   getFileText,
@@ -192,6 +196,7 @@ const props = defineProps({ id: { type: [String, Number], required: true } })
 const loading = ref(false)
 const uploading = ref(false)
 const parsing = ref(false)
+const detecting = ref(false)
 const saving = ref(false)
 const exporting = ref(false)
 const project = ref(null)
@@ -286,6 +291,30 @@ async function onParse() {
     await load()
   } finally {
     parsing.value = false
+  }
+}
+
+async function onDetectType() {
+  detecting.value = true
+  try {
+    const { data } = await detectType(props.id)
+    const label = data.project_type === 'basic' ? '基础/单次' : '年度'
+    try {
+      await ElMessageBox.confirm(
+        `识别为「${label}」，确认应用该类型并保存？\n\n依据：${data.reason || ''}`,
+        '模板类型识别',
+        { confirmButtonText: '应用', cancelButtonText: '取消', type: 'info' }
+      )
+    } catch (err) {
+      if (err === 'cancel' || err === 'close') return
+      throw err
+    }
+    form.value.project_type = data.project_type
+    const res = await updateProject(props.id, { ...form.value })
+    project.value = res.data
+    ElMessage.success(`已应用类型：${label}`)
+  } finally {
+    detecting.value = false
   }
 }
 

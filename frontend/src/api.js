@@ -30,6 +30,7 @@ export const uploadFiles = (id, files) => {
   return http.post(`/projects/${id}/files`, fd)
 }
 export const parseProject = (id) => http.post(`/projects/${id}/parse`)
+export const detectType = (id) => http.post(`/projects/${id}/detect-type`)
 export const saveItems = (id, data) => http.put(`/projects/${id}/items`, data)
 export const exportProject = (id, data) => http.post(`/projects/${id}/export`, data || {})
 export const getFileText = (projectId, fileId) =>

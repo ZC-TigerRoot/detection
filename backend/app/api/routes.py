@@ -24,10 +24,12 @@ from app.schemas import (
     ProjectUpdate,
     ExportRecordOut,
     MonitoringItemOut,
+    TypeDetectResult,
 )
 from app.services.extract import combine_project_texts, extract_file
 from app.services.export_docx import export_project_docx, safe_filename
 from app.services.llm_parse import normalize_parsed, parse_with_llm
+from app.services.detect import detect_project_type
 
 router = APIRouter(prefix="/api")
 
@@ -222,6 +224,21 @@ async def upload_files(
     db.commit()
     p = _get_project(db, project_id, load_all=True)
     return _to_detail(p)
+
+
+@router.post("/projects/{project_id}/detect-type", response_model=TypeDetectResult)
+def detect_type(project_id: int, db: Session = Depends(get_db)):
+    """直接识别该方案应套用 单次(基础) 还是 年度 模板，无需 LLM 解析。"""
+    p = _get_project(db, project_id)
+    if not p.files:
+        raise HTTPException(400, "请先上传方案文件")
+    parts = [
+        f"===== {f.original_name} =====\n{f.extracted_text or ''}" for f in p.files
+    ]
+    combined = "\n\n".join(parts)
+    if not combined.strip():
+        raise HTTPException(400, "未能从文件中提取到文本")
+    return detect_project_type(combined[:20000])
 
 
 @router.post("/projects/{project_id}/parse", response_model=ParseResult)

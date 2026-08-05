@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
+from app.services.detect import detect_project_type
 
 SYSTEM_PROMPT = """你是环境监测方案结构化助手。根据用户提供的客户方案原文，抽取统一 JSON。
 只输出 JSON，不要 Markdown 代码块，不要解释。
@@ -227,10 +228,7 @@ def _heuristic_parse(document_text: str) -> dict[str, Any]:
         else:
             it["outlet_name"] = last_name
 
-    project_type = "annual"
-    joined = document_text[:2000]
-    if any(k in joined for k in ("单次", "验收", "环评", "基础监测")) and "年度" not in joined:
-        project_type = "basic"
+    project_type = detect_project_type(document_text[:4000])["project_type"]
 
     return {
         "name": name or "未命名项目",

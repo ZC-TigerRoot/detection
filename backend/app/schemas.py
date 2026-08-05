@@ -139,6 +139,15 @@ class ExportRequest(BaseModel):
     export_type: Optional[ProjectType] = None
 
 
+class TypeDetectResult(BaseModel):
+    project_type: str
+    label: str
+    annual_score: int = 0
+    basic_score: int = 0
+    keywords: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
 class ExportResult(BaseModel):
     id: int
     file_name: str
