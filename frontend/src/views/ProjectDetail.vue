@@ -178,7 +178,7 @@
 
 <script setup>
 import { onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   detectType,
   downloadExport,
@@ -277,7 +277,9 @@ async function onUpload({ file }) {
   try {
     const { data } = await uploadFiles(props.id, [file])
     project.value = data
-    ElMessage.success(`已上传 ${file.name}`)
+    form.value.project_type = data.project_type
+    const label = data.project_type === 'basic' ? '基础/单次' : '年度'
+    ElMessage.success(`已上传 ${file.name}，自动识别类型：${label}`)
   } finally {
     uploading.value = false
   }
@@ -298,21 +300,11 @@ async function onDetectType() {
   detecting.value = true
   try {
     const { data } = await detectType(props.id)
-    const label = data.project_type === 'basic' ? '基础/单次' : '年度'
-    try {
-      await ElMessageBox.confirm(
-        `识别为「${label}」，确认应用该类型并保存？\n\n依据：${data.reason || ''}`,
-        '模板类型识别',
-        { confirmButtonText: '应用', cancelButtonText: '取消', type: 'info' }
-      )
-    } catch (err) {
-      if (err === 'cancel' || err === 'close') return
-      throw err
-    }
     form.value.project_type = data.project_type
     const res = await updateProject(props.id, { ...form.value })
     project.value = res.data
-    ElMessage.success(`已应用类型：${label}`)
+    const label = data.project_type === 'basic' ? '基础/单次' : '年度'
+    ElMessage.success(`已识别并应用类型：${label}（${data.reason}）`)
   } finally {
     detecting.value = false
   }

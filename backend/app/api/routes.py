@@ -219,6 +219,14 @@ async def upload_files(
         )
         db.add(pf)
 
+    # 上传后自动识别应套用 单次(基础) 还是 年度 模板
+    db.flush()
+    texts = [
+        f"===== {f.original_name} =====\n{f.extracted_text or ''}" for f in p.files
+    ]
+    det = detect_project_type("\n\n".join(texts)[:20000])
+    p.project_type = det["project_type"]
+
     if p.status == "draft":
         p.status = "reviewing"
     db.commit()
