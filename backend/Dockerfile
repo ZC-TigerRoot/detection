@@ -9,6 +9,9 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
     > /etc/apt/sources.list.d/aliyun.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
     curl gnupg apt-transport-https ca-certificates \
+    # RapidOCR(opencv) 运行所需系统库: libxcb.so.1 / libGL / GTK 等
+    libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 \
+    libgdk-pixbuf-2.0-0 libgtk-3-0 libxkbcommon0 libgomp1 \
     && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" \
        > /etc/apt/sources.list.d/mssql-release.list \
