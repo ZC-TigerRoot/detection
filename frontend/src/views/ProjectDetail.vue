@@ -57,10 +57,10 @@
               <el-input v-model="form.phone" />
             </el-form-item>
             <el-form-item label="类型">
-              <el-radio-group v-model="form.project_type">
-                <el-radio value="annual">年度</el-radio>
-                <el-radio value="basic">基础</el-radio>
-              </el-radio-group>
+              <el-tag :type="form.project_type === 'basic' ? 'warning' : 'success'" size="large">
+                {{ form.project_type === 'basic' ? '基础/单次' : '年度' }}
+              </el-tag>
+              <span style="margin-left: 8px; font-size: 12px; color: #909399">上传文件后自动识别，可点右上角「识别类型」重新识别</span>
             </el-form-item>
             <el-form-item label="年份">
               <el-input v-model="form.year" />

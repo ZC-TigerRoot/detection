@@ -63,12 +63,6 @@
         <el-form-item label="客户名称">
           <el-input v-model="form.client_name" />
         </el-form-item>
-        <el-form-item label="项目类型">
-          <el-radio-group v-model="form.project_type">
-            <el-radio value="annual">年度</el-radio>
-            <el-radio value="basic">基础/单次</el-radio>
-          </el-radio-group>
-        </el-form-item>
         <el-form-item label="年份">
           <el-input v-model="form.year" placeholder="如 2026" />
         </el-form-item>
@@ -93,7 +87,7 @@ const rows = ref([])
 const showCreate = ref(false)
 const creating = ref(false)
 const query = reactive({ q: '', project_type: '', status: '' })
-const form = reactive({ name: '', client_name: '', project_type: 'annual', year: '' })
+const form = reactive({ name: '', client_name: '', year: '' })
 
 function statusLabel(s) {
   return (
