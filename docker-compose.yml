@@ -5,13 +5,15 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file:
-      - ./backend/.env
     environment:
       UPLOAD_DIR: /data/uploads
       EXPORT_DIR: /data/exports
     volumes:
       - ./data:/data
+      # 挂载 .env 文件（可写）：WebUI 修改 LLM 设置直接写宿主机文件，
+      # 重启容器后依然生效。不能用 env_file 注入，否则环境变量优先级
+      # 高于文件，WebUI 保存的新值会被环境变量掩盖。
+      - ./backend/.env:/app/.env:rw
       - ./backend/templates:/app/templates:ro
     # 容器内访问 Windows 宿主机上的 SQL Server
     extra_hosts:
