@@ -6,6 +6,13 @@
         <span class="brand-text">环境监测方案管理系统</span>
       </div>
       <div class="header-right">
+        <el-button
+          link
+          @click="$router.push('/settings')"
+          style="color: #fff; font-size: 14px"
+        >
+          ⚙️ 设置
+        </el-button>
         <span class="header-desc">智能导入 · 快速校对 · 一键导出</span>
       </div>
     </el-header>

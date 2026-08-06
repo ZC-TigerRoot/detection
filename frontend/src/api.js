@@ -36,6 +36,11 @@ export const exportProject = (id, data) => http.post(`/projects/${id}/export`, d
 export const getFileText = (projectId, fileId) =>
   http.get(`/projects/${projectId}/files/${fileId}/text`)
 
+// ---------- LLM 设置 ----------
+export const getLLMSettings = () => http.get('/settings/llm')
+export const updateLLMSettings = (data) => http.put('/settings/llm', data)
+export const testLLMConnection = () => http.post('/settings/llm/test')
+
 export function downloadExport(exportId, fileName) {
   const url = `/api/exports/${exportId}/download`
   const a = document.createElement('a')

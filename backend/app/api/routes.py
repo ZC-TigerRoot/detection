@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
 import uuid
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
@@ -28,6 +30,9 @@ from app.schemas import (
     ExportRecordOut,
     MonitoringItemOut,
     TypeDetectResult,
+    LLMSettingsOut,
+    LLMSettingsUpdate,
+    LLMTestResult,
 )
 from app.services.extract import combine_project_texts, extract_file_with_status
 from app.services.export_docx import export_project_docx, safe_filename
@@ -589,3 +594,143 @@ def get_file_text(project_id: int, file_id: int, db: Session = Depends(get_db)):
     if not f or f.project_id != project_id:
         raise HTTPException(404, "文件不存在")
     return {"id": f.id, "name": f.original_name, "text": f.extracted_text or ""}
+
+
+def _mask_api_key(api_key: str) -> str:
+    """API Key 掩码，避免明文回传前端。"""
+    if not api_key:
+        return ""
+    if len(api_key) <= 8:
+        return "***"
+    return f"{api_key[:4]}***{api_key[-4:]}"
+
+
+def _llm_settings_out(settings: Settings) -> LLMSettingsOut:
+    return LLMSettingsOut(
+        llm_base_url=settings.llm_base_url,
+        llm_model=settings.llm_model,
+        llm_timeout=settings.llm_timeout,
+        llm_max_input_chars=settings.llm_max_input_chars,
+        api_key_masked=_mask_api_key(settings.llm_api_key),
+        api_key_set=bool(settings.llm_api_key),
+    )
+
+
+def _write_env(env_file: Path, updates: dict[str, str]) -> None:
+    """就地更新 .env 的 KEY=VALUE，保留注释与顺序，缺失的键追加到末尾。"""
+    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+    written: set[str] = set()
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            new_lines.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in updates:
+            new_lines.append(f"{key}={updates[key]}")
+            written.add(key)
+        else:
+            new_lines.append(line)
+
+    for key, val in updates.items():
+        if key not in written:
+            new_lines.append(f"{key}={val}")
+
+    tmp = env_file.with_suffix(env_file.suffix + ".tmp")
+    tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    tmp.replace(env_file)
+
+
+@router.get("/settings/llm", response_model=LLMSettingsOut)
+def get_llm_settings(settings: Settings = Depends(get_settings)):
+    """获取当前 LLM 配置（API Key 只返回掩码）。"""
+    return _llm_settings_out(settings)
+
+
+@router.put("/settings/llm", response_model=LLMSettingsOut)
+def update_llm_settings(body: LLMSettingsUpdate):
+    """更新 LLM 配置，持久化到 backend/.env 并刷新配置缓存。"""
+    env_file = Path(Settings.model_config["env_file"])
+    if not env_file.parent.is_dir():
+        raise HTTPException(500, "配置目录不存在，无法保存设置")
+
+    updates: dict[str, str] = {}
+    if body.llm_base_url is not None:
+        url = body.llm_base_url.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise HTTPException(400, "Base URL 必须以 http:// 或 https:// 开头")
+        updates["LLM_BASE_URL"] = url
+    if body.llm_model is not None:
+        updates["LLM_MODEL"] = body.llm_model.strip()
+    if body.llm_timeout is not None:
+        updates["LLM_TIMEOUT"] = str(body.llm_timeout)
+    if body.llm_max_input_chars is not None:
+        updates["LLM_MAX_INPUT_CHARS"] = str(body.llm_max_input_chars)
+
+    if body.clear_api_key:
+        updates["LLM_API_KEY"] = ""
+    elif body.llm_api_key:
+        key = body.llm_api_key.strip()
+        # 前端回显的是掩码，收到掩码说明用户没改，跳过
+        if "***" not in key:
+            updates["LLM_API_KEY"] = key
+
+    if not updates:
+        return _llm_settings_out(get_settings())
+
+    try:
+        _write_env(env_file, updates)
+    except OSError as exc:
+        logger.exception("写入 .env 失败")
+        raise HTTPException(500, "保存设置失败，请检查服务端文件权限") from exc
+
+    # .env 已变更，清缓存让后续请求读到新值
+    get_settings.cache_clear()
+    return _llm_settings_out(get_settings())
+
+
+@router.post("/settings/llm/test", response_model=LLMTestResult)
+async def test_llm_connection(settings: Settings = Depends(get_settings)):
+    """用当前已保存的配置向 LLM 发一个最小请求，验证连通性。"""
+    if not settings.llm_api_key:
+        return LLMTestResult(ok=False, message="未配置 API Key，解析将回退到本地启发式")
+
+    url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": settings.llm_model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 4,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            body = resp.json()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("LLM 连通性测试失败: %s", exc)
+        return LLMTestResult(
+            ok=False,
+            message=f"接口返回 {exc.response.status_code}，请检查 Base URL / API Key / 模型名",
+            latency_ms=int((time.perf_counter() - start) * 1000),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LLM 连通性测试失败: %s", exc)
+        return LLMTestResult(
+            ok=False,
+            message="连接失败，请检查网络与 Base URL",
+            latency_ms=int((time.perf_counter() - start) * 1000),
+        )
+
+    return LLMTestResult(
+        ok=True,
+        message="连接成功",
+        model=str(body.get("model") or settings.llm_model),
+        latency_ms=int((time.perf_counter() - start) * 1000),
+    )

@@ -155,3 +155,31 @@ class ExportResult(BaseModel):
     file_name: str
     export_type: str
     download_url: str
+
+
+class LLMSettingsOut(BaseModel):
+    """LLM 配置读取结果。api_key 只回显掩码，不返回明文。"""
+
+    llm_base_url: str
+    llm_model: str
+    llm_timeout: float
+    llm_max_input_chars: int
+    api_key_masked: str = ""
+    api_key_set: bool = False
+
+
+class LLMSettingsUpdate(BaseModel):
+    llm_base_url: Optional[str] = Field(None, max_length=500)
+    llm_model: Optional[str] = Field(None, max_length=200)
+    llm_timeout: Optional[float] = Field(None, ge=1, le=600)
+    llm_max_input_chars: Optional[int] = Field(None, ge=1000, le=500000)
+    # 为空字符串 = 不改动；显式传 null 无意义，用 clear_api_key 清空
+    llm_api_key: Optional[str] = Field(None, max_length=500)
+    clear_api_key: bool = False
+
+
+class LLMTestResult(BaseModel):
+    ok: bool
+    message: str
+    model: str = ""
+    latency_ms: int = 0
