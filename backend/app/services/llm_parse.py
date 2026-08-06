@@ -143,6 +143,7 @@ async def stream_parse_with_llm(
         "model": settings.llm_model,
         "temperature": 0.1,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -158,6 +159,7 @@ async def stream_parse_with_llm(
 
     full_content = ""
     full_reasoning = ""
+    usage: dict[str, int] = {}
 
     try:
         async with httpx.AsyncClient(timeout=settings.llm_timeout) as client:
@@ -174,6 +176,11 @@ async def stream_parse_with_llm(
                         chunk = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
+
+                    # 收集 usage（stream_options include_usage 时最后一个 chunk 携带）
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+
                     choice = (chunk.get("choices") or [{}])[0]
                     delta = choice.get("delta") or {}
 
@@ -204,7 +211,12 @@ async def stream_parse_with_llm(
     norm = normalize_parsed(raw_data)
 
     yield {"type": "stage", "stage": "save", "message": f"解析完成，共 {len(norm['items'])} 条监测条目"}
-    yield {"type": "done", "item_count": len(norm["items"]), "data": norm}
+    yield {
+        "type": "done",
+        "item_count": len(norm["items"]),
+        "data": norm,
+        "usage": usage,
+    }
 
 
 def _heuristic_parse(document_text: str) -> dict[str, Any]:

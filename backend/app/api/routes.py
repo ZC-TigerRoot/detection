@@ -426,7 +426,10 @@ async def parse_project_stream(
                 db.commit()
                 
                 # 数据库保存完成后才发送 done 事件
-                yield f"event: done\ndata: {json.dumps({'item_count': len(data['items'])}, ensure_ascii=False)}\n\n"
+                done_payload: dict = {"item_count": len(data["items"])}
+                if done_event.get("usage"):
+                    done_payload["usage"] = done_event["usage"]
+                yield f"event: done\ndata: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
 
         except Exception as exc:  # noqa: BLE001
             yield f"event: error\ndata: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"

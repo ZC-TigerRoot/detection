@@ -81,11 +81,16 @@
     </div>
 
     <template #footer>
-      <el-button v-if="phase === 'running'" @click="cancel">中止解析</el-button>
-      <el-button v-if="phase === 'error'" type="primary" @click="start">重试</el-button>
-      <el-button v-if="canClose" :type="phase === 'done' ? 'primary' : 'default'" @click="visible = false">
-        {{ phase === 'done' ? '开始校对' : '关闭' }}
-      </el-button>
+      <div class="pd-footer-content">
+        <div class="pd-token-info" v-if="tokenText">{{ tokenText }}</div>
+        <div class="pd-footer-actions">
+          <el-button v-if="phase === 'running'" @click="cancel">中止解析</el-button>
+          <el-button v-if="phase === 'error'" type="primary" @click="start">重试</el-button>
+          <el-button v-if="canClose" :type="phase === 'done' ? 'primary' : 'default'" @click="visible = false">
+            {{ phase === 'done' ? '开始校对' : '关闭' }}
+          </el-button>
+        </div>
+      </div>
     </template>
   </el-dialog>
 </template>
@@ -125,6 +130,7 @@ const output = ref('')
 const tab = ref('output')
 const errorMessage = ref('')
 const itemCount = ref(0)
+const tokenUsage = ref(null)
 const elapsed = ref(0)
 const streamEl = ref(null)
 
@@ -176,6 +182,20 @@ const elapsedText = computed(() => {
   return m ? `· 已用 ${m}分${r}秒` : `· 已用 ${r}秒`
 })
 
+const tokenText = computed(() => {
+  const u = tokenUsage.value
+  if (!u) return ''
+  const input = u.prompt_tokens || 0
+  const outputTokens = u.completion_tokens || 0
+  const total = u.total_tokens || input + outputTokens
+  if (!total) return ''
+  const n = (v) => v.toLocaleString('en-US')
+  if (input || outputTokens) {
+    return `本次花费 Token：输入 ${n(input)} · 输出 ${n(outputTokens)} · 共 ${n(total)}`
+  }
+  return `本次花费 Token：${n(total)}`
+})
+
 function reset() {
   phase.value = 'running'
   stage.value = 'prepare'
@@ -185,6 +205,7 @@ function reset() {
   tab.value = 'output'
   errorMessage.value = ''
   itemCount.value = 0
+  tokenUsage.value = null
   elapsed.value = 0
 }
 
@@ -213,6 +234,7 @@ function handleEvent(type, data) {
     scrollStream()
   } else if (type === 'done') {
     itemCount.value = data.item_count || 0
+    tokenUsage.value = data.usage || null
     stageMessage.value = `已写入 ${itemCount.value} 条监测条目`
     phase.value = 'done'
     stopTimer()
@@ -478,5 +500,23 @@ onBeforeUnmount(() => {
   50% {
     opacity: 0;
   }
+}
+
+.pd-footer-content {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  width: 100%;
+}
+.pd-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pd-token-info {
+  font-size: 12px;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
 }
 </style>
