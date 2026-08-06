@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings, get_settings
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.models import ExportRecord, MonitoringItem, Project, ProjectFile
 from app.schemas import (
     ExportRequest,
@@ -28,7 +30,7 @@ from app.schemas import (
 )
 from app.services.extract import combine_project_texts, extract_file_with_status
 from app.services.export_docx import export_project_docx, safe_filename
-from app.services.llm_parse import normalize_parsed, parse_with_llm
+from app.services.llm_parse import normalize_parsed, parse_with_llm, stream_parse_with_llm
 from app.services.detect import detect_project_type
 
 router = APIRouter(prefix="/api")
@@ -219,7 +221,8 @@ async def upload_files(
         path = dest_dir / stored
         content = await up.read()
         path.write_bytes(content)
-        text, extract_status, extract_error = extract_file_with_status(path)
+        # 文件提取是阻塞操作（OCR/PDF解析），移到线程池避免堵塞事件循环
+        text, extract_status, extract_error = await run_in_threadpool(extract_file_with_status, path)
         pf = ProjectFile(
             project_id=project_id,
             original_name=raw_name,
@@ -263,29 +266,8 @@ def detect_type(project_id: int, db: Session = Depends(get_db)):
     return detect_project_type(combined[:20000])
 
 
-@router.post("/projects/{project_id}/parse", response_model=ParseResult)
-async def parse_project(
-    project_id: int,
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-):
-    p = _get_project(db, project_id, load_all=True)
-    if not p.files:
-        raise HTTPException(400, "请先上传方案文件")
-
-    file_texts = [(f.original_name, f.extracted_text or "") for f in p.files]
-    combined = combine_project_texts(file_texts, settings.llm_max_input_chars)
-    if not combined.strip():
-        raise HTTPException(400, "未能从文件中提取到文本")
-
-    try:
-        raw = await parse_with_llm(settings, combined)
-        data = normalize_parsed(raw)
-    except Exception as exc:  # noqa: BLE001
-        p.status = "parse_failed"
-        p.parse_error = str(exc)
-        db.commit()
-        raise HTTPException(500, f"解析失败: {exc}") from exc
+def _apply_parsed(db: Session, p: Project, data: dict) -> None:
+    """把 normalize_parsed 的结果写入项目与监测条目（不提交事务）。"""
 
     def _merge(field: str, value: str | None, *, overwrite: bool = False) -> None:
         if value is None:
@@ -345,12 +327,119 @@ async def parse_project(
         )
 
     p.status = "reviewing"
+
+
+@router.post("/projects/{project_id}/parse", response_model=ParseResult)
+async def parse_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    p = _get_project(db, project_id, load_all=True)
+    if not p.files:
+        raise HTTPException(400, "请先上传方案文件")
+
+    file_texts = [(f.original_name, f.extracted_text or "") for f in p.files]
+    combined = combine_project_texts(file_texts, settings.llm_max_input_chars)
+    if not combined.strip():
+        raise HTTPException(400, "未能从文件中提取到文本")
+
+    try:
+        raw = await parse_with_llm(settings, combined)
+        data = normalize_parsed(raw)
+    except Exception as exc:  # noqa: BLE001
+        p.status = "parse_failed"
+        p.parse_error = str(exc)
+        db.commit()
+        raise HTTPException(500, f"解析失败: {exc}") from exc
+
+    _apply_parsed(db, p, data)
     db.commit()
     return ParseResult(
         project_id=p.id,
         status=p.status,
         item_count=len(data["items"]),
         message="解析完成，请校对" if settings.llm_api_key else "已用本地启发式解析（未配置 LLM_API_KEY）",
+    )
+
+
+@router.post("/projects/{project_id}/parse-stream")
+async def parse_project_stream(
+    project_id: int,
+    settings: Settings = Depends(get_settings),
+):
+    """
+    流式 SSE 解析端点。返回 text/event-stream，实时展示解析进度和 AI 思考过程。
+    前端用 EventSource 或 fetch + ReadableStream 消费。
+    """
+
+    async def event_generator():
+        db = SessionLocal()
+        try:
+            p = db.scalar(
+                select(Project)
+                .where(Project.id == project_id)
+                .options(selectinload(Project.files), selectinload(Project.items))
+            )
+            if not p:
+                yield f"event: error\ndata: {json.dumps({'message': '项目不存在'}, ensure_ascii=False)}\n\n"
+                return
+
+            if not p.files:
+                yield f"event: error\ndata: {json.dumps({'message': '请先上传方案文件'}, ensure_ascii=False)}\n\n"
+                return
+
+            file_texts = [(f.original_name, f.extracted_text or "") for f in p.files]
+            combined = combine_project_texts(file_texts, settings.llm_max_input_chars)
+            if not combined.strip():
+                yield f"event: error\ndata: {json.dumps({'message': '未能从文件中提取到文本'}, ensure_ascii=False)}\n\n"
+                return
+
+            # 流式解析，先收集所有事件
+            done_event = None
+            async for event in stream_parse_with_llm(settings, combined):
+                event_type = event.get("type", "message")
+                
+                if event_type == "done":
+                    # 先不发送 done，而是保存到数据库
+                    done_event = event
+                    break
+                elif event_type == "error":
+                    # 错误立即标记并发送
+                    p.status = "parse_failed"
+                    p.parse_error = event.get("message", "未知错误")
+                    db.commit()
+                    payload = json.dumps({"message": event.get("message")}, ensure_ascii=False)
+                    yield f"event: error\ndata: {payload}\n\n"
+                    return
+                else:
+                    # stage, delta, thought 事件立即转发
+                    event_copy = dict(event)
+                    event_copy.pop("type", None)
+                    payload = json.dumps(event_copy, ensure_ascii=False)
+                    yield f"event: {event_type}\ndata: {payload}\n\n"
+
+            # 解析完成，保存到数据库
+            if done_event:
+                data = done_event["data"]
+                _apply_parsed(db, p, data)
+                db.commit()
+                
+                # 数据库保存完成后才发送 done 事件
+                yield f"event: done\ndata: {json.dumps({'item_count': len(data['items'])}, ensure_ascii=False)}\n\n"
+
+        except Exception as exc:  # noqa: BLE001
+            yield f"event: error\ndata: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"
+        finally:
+            db.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+        },
     )
 
 

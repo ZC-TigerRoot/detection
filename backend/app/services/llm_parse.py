@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -108,6 +109,102 @@ async def parse_with_llm(settings: Settings, document_text: str) -> dict[str, An
     data = _extract_json_object(content)
     data["_raw_llm"] = content
     return data
+
+
+async def stream_parse_with_llm(
+    settings: Settings, document_text: str
+) -> AsyncIterator[dict[str, Any]]:
+    """
+    流式 SSE 解析。依次 yield 事件字典：
+      {"type": "stage", "stage": str, "message": str}
+      {"type": "delta", "content": str}           # LLM 文本 token
+      {"type": "thought", "content": str}         # reasoning_content (若模型支持)
+      {"type": "done", "item_count": int, "data": dict}
+      {"type": "error", "message": str}
+    """
+    yield {"type": "stage", "stage": "prepare", "message": "正在准备文档内容…"}
+
+    if not settings.llm_api_key:
+        yield {"type": "stage", "stage": "heuristic", "message": "未配置 LLM，使用本地启发式解析…"}
+        result = _heuristic_parse(document_text)
+        norm = normalize_parsed(result)
+        yield {
+            "type": "done",
+            "item_count": len(norm["items"]),
+            "data": norm,
+        }
+        return
+
+    yield {"type": "stage", "stage": "llm_call", "message": "正在调用 AI 模型进行解析…"}
+
+    base = settings.llm_base_url.rstrip("/")
+    url = f"{base}/chat/completions"
+    payload = {
+        "model": settings.llm_model,
+        "temperature": 0.1,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"请从以下环境监测/检测方案中抽取结构化数据：\n\n{document_text}",
+            },
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    full_content = ""
+    full_reasoning = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.llm_timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+
+                    # reasoning_content (DeepSeek-R1 等支持)
+                    rc = delta.get("reasoning_content") or ""
+                    if rc:
+                        full_reasoning += rc
+                        yield {"type": "thought", "content": rc}
+
+                    # 普通文本
+                    c = delta.get("content") or ""
+                    if c:
+                        full_content += c
+                        yield {"type": "delta", "content": c}
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "error", "message": f"LLM 调用失败: {exc}"}
+        return
+
+    yield {"type": "stage", "stage": "parse_json", "message": "正在解析 JSON 结构…"}
+
+    try:
+        raw_data = _extract_json_object(full_content)
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "error", "message": f"JSON 解析失败: {exc}"}
+        return
+
+    raw_data["_raw_llm"] = full_content
+    norm = normalize_parsed(raw_data)
+
+    yield {"type": "stage", "stage": "save", "message": f"解析完成，共 {len(norm['items'])} 条监测条目"}
+    yield {"type": "done", "item_count": len(norm["items"]), "data": norm}
 
 
 def _heuristic_parse(document_text: str) -> dict[str, Any]:
