@@ -637,9 +637,9 @@ def _write_env(env_file: Path, updates: dict[str, str]) -> None:
         if key not in written:
             new_lines.append(f"{key}={val}")
 
-    tmp = env_file.with_suffix(env_file.suffix + ".tmp")
-    tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    tmp.replace(env_file)
+    # Docker 生产环境 .env 是单文件 bind mount，tmp+rename 会报"设备忙"，
+    # 只能直接写内容（文件很小，写入中断风险可忽略）
+    env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 @router.get("/settings/llm", response_model=LLMSettingsOut)
