@@ -3,12 +3,48 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
+import xml.parsers.expat as expat
 
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 SS_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+# ZIP 炸弹防护：解压后单个文件大小上限（100 MB）
+_MAX_UNCOMPRESSED_SIZE = 100 * 1024 * 1024
+
+
+def _safe_fromstring(xml_bytes: bytes) -> ET.Element:
+    """防 XML 实体膨胀（billion laughs）：拒绝任何 DTD 实体声明。"""
+    def forbid_entity(*args):
+        raise ValueError("XML 实体声明被禁止，防止实体膨胀攻击")
+
+    parser = expat.ParserCreate()
+    parser.EntityDeclHandler = forbid_entity
+    try:
+        parser.Parse(xml_bytes, True)
+    except expat.ExpatError:
+        # 如果 expat 报语法错误但没触发 entity handler，仍可继续
+        pass
+    # expat 扫过无实体声明，交给 ElementTree 解析
+    return ET.fromstring(xml_bytes)
+
+
+def _safe_zip_read(zf: zipfile.ZipFile, name: str) -> bytes:
+    """防 ZIP 炸弹：按 header 声明的解压大小拦截，再按实际读取量二次校验。"""
+    info = zf.getinfo(name)
+    if info.file_size > _MAX_UNCOMPRESSED_SIZE:
+        raise ValueError(
+            f"压缩包内文件过大（{info.file_size} 字节），超过 "
+            f"{_MAX_UNCOMPRESSED_SIZE} 字节上限"
+        )
+    with zf.open(name) as fh:
+        data = fh.read(_MAX_UNCOMPRESSED_SIZE + 1)
+    if len(data) > _MAX_UNCOMPRESSED_SIZE:
+        raise ValueError("压缩包内文件解压后超过大小上限")
+    return data
 
 
 def _read_text_auto(path: Path) -> str:
@@ -64,8 +100,8 @@ def extract_file_with_status(path: Path) -> tuple[str, str, str]:
 
 def _extract_docx(path: Path) -> str:
     with zipfile.ZipFile(path) as zf:
-        xml = zf.read("word/document.xml")
-    root = ET.fromstring(xml)
+        xml = _safe_zip_read(zf, "word/document.xml")
+    root = _safe_fromstring(xml)
     blocks: list[str] = []
 
     body = root.find(f"{W_NS}body")
@@ -137,14 +173,14 @@ def _extract_xlsx_raw(path: Path) -> str:
     with zipfile.ZipFile(path) as zf:
         shared: list[str] = []
         if "xl/sharedStrings.xml" in zf.namelist():
-            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            root = _safe_fromstring(_safe_zip_read(zf, "xl/sharedStrings.xml"))
             for si in root.findall(f"{SS_NS}si"):
                 texts = [t.text or "" for t in si.iter(f"{SS_NS}t")]
                 shared.append("".join(texts))
         sheets = sorted(n for n in zf.namelist() if n.startswith("xl/worksheets/sheet"))
         parts: list[str] = []
         for sh in sheets:
-            root = ET.fromstring(zf.read(sh))
+            root = _safe_fromstring(_safe_zip_read(zf, sh))
             lines: list[str] = []
             for row in root.findall(f".//{SS_NS}row"):
                 vals: list[str] = []
@@ -176,7 +212,7 @@ def _ocr_image_with_status(path: Path) -> tuple[str, str, str]:
             "未安装 OCR 依赖",
         )
     try:
-        result, _ = engine(str(path))
+        result, _ = _run_ocr(engine, str(path))
         if not result:
             return "", "no_text", "OCR 未识别到文字"
         return "\n".join(item[1] for item in result).strip(), "success", ""
@@ -204,16 +240,27 @@ def _extract_pdf(path: Path) -> str:
 
 
 _ocr_engine: object | None = None
+# 初始化锁与推理锁分开：初始化在推理锁外，避免同一把非可重入锁自死锁
+_ocr_lock = threading.Lock()
+_ocr_infer_lock = threading.Lock()
+
+
+def _run_ocr(engine, target: str):
+    """串行执行 OCR 推理。RapidOCR/onnxruntime session 未声明线程安全，
+    而调用方在 threadpool 中并发进入，这里加锁避免竞态。"""
+    with _ocr_infer_lock:
+        return engine(target)
 
 
 def _get_ocr_engine():
-    """懒加载 RapidOCR 引擎（首次初始化较慢，之后复用）。"""
+    """懒加载 RapidOCR 引擎（首次初始化较慢，之后复用）。线程安全。"""
     global _ocr_engine
-    if _ocr_engine is None:
-        from rapidocr_onnxruntime import RapidOCR
+    with _ocr_lock:
+        if _ocr_engine is None:
+            from rapidocr_onnxruntime import RapidOCR
 
-        _ocr_engine = RapidOCR()
-    return _ocr_engine
+            _ocr_engine = RapidOCR()
+        return _ocr_engine
 
 
 def _ocr_pdf(path: Path, max_pages: int) -> str:
@@ -234,7 +281,7 @@ def _ocr_pdf(path: Path, max_pages: int) -> str:
                 pix = page.get_pixmap(dpi=200)
                 png = Path(tmp) / f"page_{i}.png"
                 pix.save(png)
-                result, _ = engine(str(png))
+                result, _ = _run_ocr(engine, str(png))
                 if result:
                     lines = [item[1] for item in result]
                     parts.append("\n".join(lines))

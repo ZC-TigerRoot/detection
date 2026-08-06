@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import uuid
 from pathlib import Path
@@ -33,6 +34,15 @@ from app.services.export_docx import export_project_docx, safe_filename
 from app.services.llm_parse import normalize_parsed, parse_with_llm, stream_parse_with_llm
 from app.services.detect import detect_project_type
 
+# 允许上传的扩展名白名单
+_ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
+    {".docx", ".doc", ".xlsx", ".xlsm", ".pdf", ".txt", ".md", ".csv",
+     ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+)
+# 单文件最大字节数（50 MB）
+_MAX_FILE_SIZE = 50 * 1024 * 1024
+
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 
@@ -217,10 +227,29 @@ async def upload_files(
     for up in files:
         raw_name = up.filename or "upload.bin"
         ext = Path(raw_name).suffix.lower()
+
+        # 扩展名白名单校验
+        if ext not in _ALLOWED_EXTENSIONS:
+            raise HTTPException(400, f"不支持的文件类型: {ext}，允许类型: {', '.join(sorted(_ALLOWED_EXTENSIONS))}")
+
         stored = f"{uuid.uuid4().hex}{ext}"
         path = dest_dir / stored
-        content = await up.read()
-        path.write_bytes(content)
+
+        # 分块写磁盘，同时检查文件大小上限，避免一次性读进内存
+        size = 0
+        chunk_size = 1024 * 1024  # 1 MB per chunk
+        with path.open("wb") as fp:
+            while True:
+                chunk = await up.read(chunk_size)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_FILE_SIZE:
+                    fp.close()
+                    path.unlink(missing_ok=True)
+                    raise HTTPException(400, f"文件 {raw_name!r} 超过大小限制 {_MAX_FILE_SIZE // 1024 // 1024} MB")
+                fp.write(chunk)
+
         # 文件提取是阻塞操作（OCR/PDF解析），移到线程池避免堵塞事件循环
         text, extract_status, extract_error = await run_in_threadpool(extract_file_with_status, path)
         pf = ProjectFile(
@@ -229,7 +258,7 @@ async def upload_files(
             stored_path=str(path),
             content_type=up.content_type or "",
             file_ext=ext,
-            size=len(content),
+            size=size,
             extracted_text=text,
             extract_status=extract_status,
             extract_error=extract_error,
@@ -348,10 +377,11 @@ async def parse_project(
         raw = await parse_with_llm(settings, combined)
         data = normalize_parsed(raw)
     except Exception as exc:  # noqa: BLE001
+        logger.exception("项目 %s 解析失败", project_id)
         p.status = "parse_failed"
-        p.parse_error = str(exc)
+        p.parse_error = "解析失败，请查看服务端日志"
         db.commit()
-        raise HTTPException(500, f"解析失败: {exc}") from exc
+        raise HTTPException(500, "解析失败，请稍后重试") from exc
 
     _apply_parsed(db, p, data)
     db.commit()
@@ -405,11 +435,16 @@ async def parse_project_stream(
                     done_event = event
                     break
                 elif event_type == "error":
-                    # 错误立即标记并发送
+                    # 详细原因只落服务端日志，客户端只收通用提示
+                    logger.error(
+                        "项目 %s 流式解析失败: %s", project_id, event.get("message", "未知错误")
+                    )
                     p.status = "parse_failed"
-                    p.parse_error = event.get("message", "未知错误")
+                    p.parse_error = "解析失败，请查看服务端日志"
                     db.commit()
-                    payload = json.dumps({"message": event.get("message")}, ensure_ascii=False)
+                    payload = json.dumps(
+                        {"message": "解析失败，请查看服务端日志"}, ensure_ascii=False
+                    )
                     yield f"event: error\ndata: {payload}\n\n"
                     return
                 else:
@@ -431,8 +466,13 @@ async def parse_project_stream(
                     done_payload["usage"] = done_event["usage"]
                 yield f"event: done\ndata: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
 
-        except Exception as exc:  # noqa: BLE001
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"
+        except Exception:  # noqa: BLE001
+            logger.exception("SSE 解析项目 %s 失败", project_id)
+            db.rollback()
+            yield (
+                "event: error\ndata: "
+                f"{json.dumps({'message': '解析失败，请查看服务端日志'}, ensure_ascii=False)}\n\n"
+            )
         finally:
             db.close()
 
@@ -528,6 +568,11 @@ def download_export(export_id: int, db: Session = Depends(get_db)):
     rec = db.get(ExportRecord, export_id)
     if not rec:
         raise HTTPException(404, "导出记录不存在")
+    # 校验关联项目是否存在（防止孤立记录或删除后残留）
+    # 内网无认证场景下已做数据完整性检查，如有认证可加用户归属校验
+    project = db.get(Project, rec.project_id)
+    if not project:
+        raise HTTPException(404, "关联项目不存在")
     path = Path(rec.stored_path)
     if not path.exists():
         raise HTTPException(404, "文件不存在")

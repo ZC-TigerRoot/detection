@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "环境监测方案管理系统"
-    debug: bool = True
+    debug: bool = False
 
     # 默认 SQLite；生产改为 SQL Server，例:
     # mssql+pyodbc://user:pass@host/detection?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
